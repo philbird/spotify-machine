@@ -1,4 +1,5 @@
 import { db } from '../db/index.js';
+import { SpotifyError } from '../spotify/client.js';
 import { getAllPlaylists, getCurrentUser, getLikedTracks, getPlaylistTracks } from '../spotify/fetchers.js';
 import type { SpotifyPlaylist, SpotifyPlaylistTrackItem, SpotifyTrack } from '../spotify/types.js';
 import { finishRun, startRun } from './runs.js';
@@ -35,6 +36,7 @@ async function syncPlaylists(runId: number, stats: SyncStats): Promise<void> {
   const seenIds = new Set<string>();
 
   for await (const pl of getAllPlaylists()) {
+    if (!pl || !pl.id) continue;
     seenIds.add(pl.id);
     stats.playlistsSeen++;
 
@@ -75,7 +77,15 @@ async function syncPlaylists(runId: number, stats: SyncStats): Promise<void> {
 
 async function syncPlaylistTracks(runId: number, pl: SpotifyPlaylist, stats: SyncStats): Promise<void> {
   const items: SpotifyPlaylistTrackItem[] = [];
-  for await (const item of getPlaylistTracks(pl.id)) items.push(item);
+  try {
+    for await (const item of getPlaylistTracks(pl.id)) items.push(item);
+  } catch (err) {
+    if (err instanceof SpotifyError && (err.status === 403 || err.status === 404)) {
+      console.warn(`[sync] skipping playlist ${pl.id} (${pl.name}): ${err.status} ${err.body}`);
+      return;
+    }
+    throw err;
+  }
 
   const newRows: TrackRow[] = [];
   let pos = 0;
@@ -203,12 +213,12 @@ function upsertPlaylist(pl: SpotifyPlaylist): void {
     .run(
       pl.id,
       pl.name,
-      pl.owner.id,
-      pl.owner.display_name,
-      pl.description,
-      pl.snapshot_id,
-      pl.tracks.total,
-      pl.public === null ? null : pl.public ? 1 : 0,
+      pl.owner?.id ?? null,
+      pl.owner?.display_name ?? null,
+      pl.description ?? null,
+      pl.snapshot_id ?? null,
+      pl.tracks?.total ?? 0,
+      pl.public == null ? null : pl.public ? 1 : 0,
       pl.collaborative ? 1 : 0
     );
 }

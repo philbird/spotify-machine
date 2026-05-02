@@ -5,10 +5,12 @@ const API = 'https://api.spotify.com/v1';
 export class SpotifyError extends Error {
   status: number;
   body: string;
-  constructor(status: number, body: string) {
-    super(`Spotify API ${status}: ${body}`);
+  url: string;
+  constructor(status: number, body: string, url: string) {
+    super(`Spotify API ${status} at ${url}: ${body}`);
     this.status = status;
     this.body = body;
+    this.url = url;
   }
 }
 
@@ -29,12 +31,12 @@ export async function spotifyFetch<T>(pathOrUrl: string, init: RequestInit = {})
       const retryAfter = Number(res.headers.get('retry-after') ?? '1');
       await sleep(Math.min(retryAfter, 30) * 1000);
       attempt++;
-      if (attempt > 5) throw new SpotifyError(429, 'rate limited (gave up after 5 retries)');
+      if (attempt > 5) throw new SpotifyError(429, 'rate limited (gave up after 5 retries)', url);
       continue;
     }
 
     if (!res.ok) {
-      throw new SpotifyError(res.status, await res.text());
+      throw new SpotifyError(res.status, await res.text(), url);
     }
 
     if (res.status === 204) return undefined as T;
