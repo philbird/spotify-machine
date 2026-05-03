@@ -31,7 +31,11 @@ export type SpotifyPlaylistTrackItem = {
   added_at: string | null;
   added_by: { id: string | null } | null;
   is_local: boolean;
-  track: SpotifyTrack | null;
+  // Spotify renamed this field from `track` to `item` along with the
+  // /tracks → /items endpoint rename. Both shapes appear in the wild
+  // depending on which endpoint variant the API serves.
+  item?: SpotifyTrack | null;
+  track?: SpotifyTrack | null;
 };
 
 export type SpotifySavedTrackItem = {

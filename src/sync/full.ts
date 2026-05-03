@@ -89,13 +89,14 @@ async function syncPlaylistTracks(runId: number, pl: SpotifyPlaylist, stats: Syn
 
   const newRows: TrackRow[] = [];
   let pos = 0;
-  for (const item of items) {
-    if (!item.track || item.is_local || !item.track.id) {
+  for (const entry of items) {
+    const track = entry.item ?? entry.track;
+    if (!track || entry.is_local || !track.id) {
       pos++;
       continue;
     }
-    upsertTrack(item.track);
-    newRows.push({ track_id: item.track.id, position: pos, added_at: item.added_at });
+    upsertTrack(track);
+    newRows.push({ track_id: track.id, position: pos, added_at: entry.added_at });
     pos++;
   }
 

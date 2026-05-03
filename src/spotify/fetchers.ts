@@ -16,7 +16,10 @@ export async function* getAllPlaylists(): AsyncGenerator<SpotifyPlaylist, void, 
 }
 
 export async function* getPlaylistTracks(playlistId: string): AsyncGenerator<SpotifyPlaylistTrackItem, void, void> {
-  yield* paginate<SpotifyPlaylistTrackItem>(`/playlists/${playlistId}/tracks?limit=100`);
+  // Spotify deprecated /playlists/{id}/tracks (returns 403). The replacement
+  // endpoint is /items, which paginates the same way but returns each entry
+  // with its track in `item` instead of `track`.
+  yield* paginate<SpotifyPlaylistTrackItem>(`/playlists/${playlistId}/items?limit=100`);
 }
 
 export async function* getLikedTracks(): AsyncGenerator<SpotifySavedTrackItem, void, void> {
