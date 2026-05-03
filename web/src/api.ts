@@ -66,7 +66,8 @@ export const api = {
   settings: () => request<Settings>('/api/settings'),
   saveSettings: (patch: Partial<Settings>) =>
     request<Settings>('/api/settings', { method: 'PUT', body: JSON.stringify(patch) }),
-  syncFull: () => request<{ runId: number; stats: unknown }>('/api/sync/full', { method: 'POST' }),
+  syncFull: (force = false) =>
+    request<{ runId: number; stats: unknown }>(`/api/sync/full${force ? '?force=1' : ''}`, { method: 'POST' }),
   syncPlays: () => request<{ runId: number; stats: unknown }>('/api/sync/plays', { method: 'POST' }),
   inflight: () => request<{ inflight: { kind: string } | null }>('/api/sync/inflight'),
   changelog: (limit = 50) => request<ChangelogRow[]>(`/api/changelog?limit=${limit}`),

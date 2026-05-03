@@ -8,7 +8,7 @@ const LIKED_PLAYLIST_ID = '__liked__';
 
 type TrackRow = { track_id: string; position: number; added_at: string | null };
 
-export async function runFullSync(): Promise<{ runId: number; stats: SyncStats }> {
+export async function runFullSync(opts: { force?: boolean } = {}): Promise<{ runId: number; stats: SyncStats }> {
   const runId = startRun('full');
   const stats: SyncStats = {
     playlistsSeen: 0,
@@ -20,7 +20,7 @@ export async function runFullSync(): Promise<{ runId: number; stats: SyncStats }
   };
 
   try {
-    await syncPlaylists(runId, stats);
+    await syncPlaylists(runId, stats, opts.force === true);
     await syncLikedSongs(runId, stats);
     finishRun(runId, 'ok', stats);
     return { runId, stats };
@@ -31,7 +31,7 @@ export async function runFullSync(): Promise<{ runId: number; stats: SyncStats }
   }
 }
 
-async function syncPlaylists(runId: number, stats: SyncStats): Promise<void> {
+async function syncPlaylists(runId: number, stats: SyncStats, force: boolean): Promise<void> {
   const me = await getCurrentUser();
   const seenIds = new Set<string>();
 
@@ -44,7 +44,7 @@ async function syncPlaylists(runId: number, stats: SyncStats): Promise<void> {
       .prepare('SELECT name, snapshot_id FROM playlists WHERE id = ?')
       .get(pl.id) as { name: string; snapshot_id: string | null } | undefined;
 
-    if (existing && existing.snapshot_id === pl.snapshot_id) {
+    if (!force && existing && existing.snapshot_id === pl.snapshot_id) {
       db().prepare(`UPDATE playlists SET last_synced_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`).run(pl.id);
       continue;
     }

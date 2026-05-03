@@ -3,15 +3,18 @@ import { runFullSync } from './sync/full.js';
 import { runPlaysPoll } from './sync/plays.js';
 
 async function main(): Promise<void> {
-  const arg = process.argv[2] ?? 'full';
+  const args = process.argv.slice(2);
+  const force = args.includes('--force');
+  const positional = args.filter((a) => !a.startsWith('--'));
+  const arg = positional[0] ?? 'full';
   if (arg !== 'full' && arg !== 'plays' && arg !== 'all') {
-    console.error('Usage: npm run sync -- [full|plays|all]   (default: full)');
+    console.error('Usage: npm run sync -- [full|plays|all] [--force]   (default: full)');
     process.exit(2);
   }
 
   if (arg === 'full' || arg === 'all') {
-    console.log('Running full sync...');
-    const { stats } = await runFullSync();
+    console.log(`Running full sync${force ? ' (force)' : ''}...`);
+    const { stats } = await runFullSync({ force });
     console.log('Full sync done:', stats);
   }
   if (arg === 'plays' || arg === 'all') {

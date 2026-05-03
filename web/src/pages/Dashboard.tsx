@@ -27,11 +27,12 @@ export function Dashboard() {
     await refresh();
   }
 
-  async function syncNow(kind: 'full' | 'plays') {
+  async function syncNow(kind: 'full' | 'plays' | 'force-full') {
     setBusy(kind);
     setError(null);
     try {
       if (kind === 'full') await api.syncFull();
+      else if (kind === 'force-full') await api.syncFull(true);
       else await api.syncPlays();
       await refresh();
     } catch (e) {
@@ -84,9 +85,17 @@ export function Dashboard() {
           Last full sync: {data?.lastFullSync?.finished_at ?? 'never'}<br />
           Last plays poll: {data?.lastPlaysPoll?.finished_at ?? 'never'}
         </p>
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <button onClick={() => syncNow('full')} disabled={!auth?.connected || busy !== null}>
             {busy === 'full' ? 'Syncing…' : 'Full sync now'}
+          </button>
+          <button
+            className="secondary"
+            onClick={() => syncNow('force-full')}
+            disabled={!auth?.connected || busy !== null}
+            title="Re-fetch tracks for every playlist, ignoring snapshot_id. Use this once after a Spotify API change."
+          >
+            {busy === 'force-full' ? 'Re-syncing…' : 'Force re-sync'}
           </button>
           <button className="secondary" onClick={() => syncNow('plays')} disabled={!auth?.connected || busy !== null}>
             {busy === 'plays' ? 'Polling…' : 'Poll plays now'}

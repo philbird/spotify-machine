@@ -7,11 +7,12 @@ export const syncRouter = express.Router();
 
 let inflight: { kind: 'full' | 'plays' } | null = null;
 
-syncRouter.post('/full', async (_req, res, next) => {
+syncRouter.post('/full', async (req, res, next) => {
   if (inflight) return res.status(409).json({ error: `A ${inflight.kind} sync is already running` });
   inflight = { kind: 'full' };
   try {
-    const result = await runFullSync();
+    const force = req.query.force === '1' || req.query.force === 'true';
+    const result = await runFullSync({ force });
     res.json(result);
   } catch (err) {
     next(err);
