@@ -27,6 +27,25 @@ export type SyncRun = {
   error: string | null;
   stats: string | null;
 };
+export type PlaylistRow = {
+  id: string;
+  name: string;
+  owner_name: string | null;
+  track_count: number;
+  is_liked_songs: 0 | 1;
+  last_synced_at: string | null;
+};
+export type PlaylistTrackRow = {
+  id: string;
+  name: string;
+  artist_names: string;
+  album: string | null;
+  duration_ms: number | null;
+  position: number;
+  added_at: string | null;
+  total_plays: number;
+  last_played_at: string | null;
+};
 export type ChangelogRow = {
   id: number;
   occurred_at: string;
@@ -51,4 +70,7 @@ export const api = {
   syncPlays: () => request<{ runId: number; stats: unknown }>('/api/sync/plays', { method: 'POST' }),
   inflight: () => request<{ inflight: { kind: string } | null }>('/api/sync/inflight'),
   changelog: (limit = 50) => request<ChangelogRow[]>(`/api/changelog?limit=${limit}`),
+  playlists: () => request<PlaylistRow[]>('/api/playlists'),
+  playlistTracks: (id: string) =>
+    request<PlaylistTrackRow[]>(`/api/playlists/${encodeURIComponent(id)}/tracks`),
 };
