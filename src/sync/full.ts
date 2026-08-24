@@ -2,14 +2,32 @@ import { db } from '../db/index.js';
 import { SpotifyError } from '../spotify/client.js';
 import { getAllPlaylists, getCurrentUser, getLikedTracks, getPlaylistTracks } from '../spotify/fetchers.js';
 import type { SpotifyPlaylist, SpotifyPlaylistTrackItem, SpotifyTrack } from '../spotify/types.js';
-import { finishRun, startRun } from './runs.js';
+import {
+  emptyProgress,
+  finishRun,
+  sanitizeErrorMessage,
+  updateRunProgress,
+  type SyncProgress,
+} from './runs.js';
 
 const LIKED_PLAYLIST_ID = '__liked__';
 
 type TrackRow = { track_id: string; position: number; added_at: string | null };
 
-export async function runFullSync(opts: { force?: boolean } = {}): Promise<{ runId: number; stats: SyncStats }> {
-  const runId = startRun('full');
+type SyncContext = {
+  runId: number;
+  stats: SyncStats;
+  progress: SyncProgress;
+};
+
+// Performs the full sync against an already-created sync_runs row. Callers
+// obtain the row through fullSyncJob.ts, which enforces one-at-a-time
+// execution — do not call this with a runId that was not claimed there.
+//
+// The run row is finalized on every path: 'ok' on success, 'error' (with a
+// sanitized message) on any throw, and the finally block backstops exotic
+// exits so a row is never left 'running' by a caught failure.
+export async function executeFullSync(runId: number, opts: { force?: boolean } = {}): Promise<SyncStats> {
   const stats: SyncStats = {
     playlistsSeen: 0,
     playlistsChanged: 0,
@@ -18,27 +36,47 @@ export async function runFullSync(opts: { force?: boolean } = {}): Promise<{ run
     likedAdded: 0,
     likedRemoved: 0,
   };
+  const ctx: SyncContext = { runId, stats, progress: emptyProgress() };
+
+  let finalized = false;
+  const finalize = (status: 'ok' | 'error', error?: string): void => {
+    if (finalized) return;
+    finalized = true;
+    ctx.progress.currentPlaylist = null;
+    finishRun(runId, status, stats, error, ctx.progress);
+  };
 
   try {
-    await syncPlaylists(runId, stats, opts.force === true);
-    await syncLikedSongs(runId, stats);
-    finishRun(runId, 'ok', stats);
-    return { runId, stats };
+    await syncPlaylists(ctx, opts.force === true);
+    await syncLikedSongs(ctx);
+    finalize('ok');
+    return stats;
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    finishRun(runId, 'error', stats, message);
+    finalize('error', sanitizeErrorMessage(err));
     throw err;
+  } finally {
+    finalize('error', 'Sync ended without a result');
   }
 }
 
-async function syncPlaylists(runId: number, stats: SyncStats, force: boolean): Promise<void> {
+async function syncPlaylists(ctx: SyncContext, force: boolean): Promise<void> {
   const me = await getCurrentUser();
   const seenIds = new Set<string>();
 
+  // Materialize the playlist list up front so progress can report a total.
+  const playlists: SpotifyPlaylist[] = [];
   for await (const pl of getAllPlaylists()) {
     if (!pl || !pl.id) continue;
+    playlists.push(pl);
+  }
+  ctx.progress.counters.playlistsTotal = playlists.length + 1; // + Liked Songs
+  updateRunProgress(ctx.runId, ctx.progress);
+
+  for (const pl of playlists) {
     seenIds.add(pl.id);
-    stats.playlistsSeen++;
+    ctx.stats.playlistsSeen++;
+    ctx.progress.currentPlaylist = { id: pl.id, name: pl.name };
+    updateRunProgress(ctx.runId, ctx.progress);
 
     const existing = db()
       .prepare('SELECT name, snapshot_id FROM playlists WHERE id = ?')
@@ -46,19 +84,21 @@ async function syncPlaylists(runId: number, stats: SyncStats, force: boolean): P
 
     if (!force && existing && existing.snapshot_id === pl.snapshot_id) {
       db().prepare(`UPDATE playlists SET last_synced_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`).run(pl.id);
+      finishPlaylist(ctx, false);
       continue;
     }
 
     if (existing && existing.name !== pl.name) {
-      logChange(runId, 'playlist_renamed', { playlist_id: pl.id, details: { from: existing.name, to: pl.name } });
+      logChange(ctx, 'playlist_renamed', { playlist_id: pl.id, details: { from: existing.name, to: pl.name } });
     }
     if (!existing) {
-      logChange(runId, 'playlist_added', { playlist_id: pl.id, details: { name: pl.name } });
+      logChange(ctx, 'playlist_added', { playlist_id: pl.id, details: { name: pl.name } });
     }
 
-    stats.playlistsChanged++;
+    ctx.stats.playlistsChanged++;
     upsertPlaylist(pl);
-    await syncPlaylistTracks(runId, pl, stats);
+    const failed = await syncPlaylistTracks(ctx, pl);
+    finishPlaylist(ctx, failed);
   }
 
   // Detect deleted playlists.
@@ -67,7 +107,7 @@ async function syncPlaylists(runId: number, stats: SyncStats, force: boolean): P
     .all() as { id: string; name: string }[];
   for (const row of knownRows) {
     if (!seenIds.has(row.id)) {
-      logChange(runId, 'playlist_removed', { playlist_id: row.id, details: { name: row.name } });
+      logChange(ctx, 'playlist_removed', { playlist_id: row.id, details: { name: row.name } });
       db().prepare('DELETE FROM playlists WHERE id = ?').run(row.id);
     }
   }
@@ -75,14 +115,24 @@ async function syncPlaylists(runId: number, stats: SyncStats, force: boolean): P
   void me;
 }
 
-async function syncPlaylistTracks(runId: number, pl: SpotifyPlaylist, stats: SyncStats): Promise<void> {
+// Marks one playlist as attempted and persists progress — the per-playlist
+// checkpoint the status endpoint reads while a run is in flight.
+function finishPlaylist(ctx: SyncContext, failed: boolean): void {
+  ctx.progress.counters.playlistsProcessed++;
+  if (failed) ctx.progress.counters.playlistsFailed++;
+  updateRunProgress(ctx.runId, ctx.progress);
+}
+
+// Returns true if the playlist failed and was skipped (counted, run continues);
+// unexpected errors propagate and abort the whole run.
+async function syncPlaylistTracks(ctx: SyncContext, pl: SpotifyPlaylist): Promise<boolean> {
   const items: SpotifyPlaylistTrackItem[] = [];
   try {
     for await (const item of getPlaylistTracks(pl.id)) items.push(item);
   } catch (err) {
     if (err instanceof SpotifyError && (err.status === 403 || err.status === 404)) {
       console.warn(`[sync] skipping playlist ${pl.id} (${pl.name}): ${err.status} ${err.body}`);
-      return;
+      return true;
     }
     throw err;
   }
@@ -99,6 +149,7 @@ async function syncPlaylistTracks(runId: number, pl: SpotifyPlaylist, stats: Syn
     newRows.push({ track_id: track.id, position: pos, added_at: entry.added_at });
     pos++;
   }
+  ctx.progress.counters.tracksProcessed += newRows.length;
 
   const oldRows = db()
     .prepare('SELECT track_id, position, added_at FROM playlist_tracks WHERE playlist_id = ?')
@@ -123,20 +174,23 @@ async function syncPlaylistTracks(runId: number, pl: SpotifyPlaylist, stats: Syn
 
   for (const trackId of newSet) {
     if (!oldSet.has(trackId)) {
-      stats.tracksAdded++;
-      logChange(runId, 'track_added_to_playlist', { playlist_id: pl.id, track_id: trackId });
+      ctx.stats.tracksAdded++;
+      logChange(ctx, 'track_added_to_playlist', { playlist_id: pl.id, track_id: trackId });
     }
   }
   for (const trackId of oldSet) {
     if (!newSet.has(trackId)) {
-      stats.tracksRemoved++;
-      logChange(runId, 'track_removed_from_playlist', { playlist_id: pl.id, track_id: trackId });
+      ctx.stats.tracksRemoved++;
+      logChange(ctx, 'track_removed_from_playlist', { playlist_id: pl.id, track_id: trackId });
     }
   }
+  return false;
 }
 
-async function syncLikedSongs(runId: number, stats: SyncStats): Promise<void> {
+async function syncLikedSongs(ctx: SyncContext): Promise<void> {
   ensureLikedPlaylistRow();
+  ctx.progress.currentPlaylist = { id: LIKED_PLAYLIST_ID, name: 'Liked Songs' };
+  updateRunProgress(ctx.runId, ctx.progress);
 
   const newRows: TrackRow[] = [];
   let pos = 0;
@@ -149,6 +203,7 @@ async function syncLikedSongs(runId: number, stats: SyncStats): Promise<void> {
     newRows.push({ track_id: item.track.id, position: pos, added_at: item.added_at });
     pos++;
   }
+  ctx.progress.counters.tracksProcessed += newRows.length;
 
   const oldRows = db()
     .prepare('SELECT track_id, position, added_at FROM playlist_tracks WHERE playlist_id = ?')
@@ -173,16 +228,17 @@ async function syncLikedSongs(runId: number, stats: SyncStats): Promise<void> {
 
   for (const trackId of newSet) {
     if (!oldSet.has(trackId)) {
-      stats.likedAdded++;
-      logChange(runId, 'track_liked', { playlist_id: LIKED_PLAYLIST_ID, track_id: trackId });
+      ctx.stats.likedAdded++;
+      logChange(ctx, 'track_liked', { playlist_id: LIKED_PLAYLIST_ID, track_id: trackId });
     }
   }
   for (const trackId of oldSet) {
     if (!newSet.has(trackId)) {
-      stats.likedRemoved++;
-      logChange(runId, 'track_unliked', { playlist_id: LIKED_PLAYLIST_ID, track_id: trackId });
+      ctx.stats.likedRemoved++;
+      logChange(ctx, 'track_unliked', { playlist_id: LIKED_PLAYLIST_ID, track_id: trackId });
     }
   }
+  finishPlaylist(ctx, false);
 }
 
 function ensureLikedPlaylistRow(): void {
@@ -256,7 +312,7 @@ export function upsertTrack(t: SpotifyTrack): void {
 }
 
 function logChange(
-  runId: number,
+  ctx: SyncContext,
   eventType: string,
   args: { playlist_id?: string; track_id?: string; details?: unknown }
 ): void {
@@ -270,8 +326,9 @@ function logChange(
       args.playlist_id ?? null,
       args.track_id ?? null,
       args.details === undefined ? null : JSON.stringify(args.details),
-      runId
+      ctx.runId
     );
+  ctx.progress.counters.changesRecorded++;
 }
 
 export type SyncStats = {

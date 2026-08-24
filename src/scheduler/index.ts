@@ -1,6 +1,6 @@
 import cron, { type ScheduledTask } from 'node-cron';
 import { getSettings } from '../db/settings.js';
-import { runFullSync } from '../sync/full.js';
+import { startFullSyncJob } from '../sync/fullSyncJob.js';
 import { runPlaysPoll } from '../sync/plays.js';
 
 let fullTask: ScheduledTask | null = null;
@@ -28,9 +28,16 @@ export function applySchedule(): void {
   }
 
   fullTask = cron.schedule(settings.fullSyncCron, async () => {
+    // Shares the exclusivity guard with the API and CLI: if a full sync is
+    // already running this tick is skipped rather than doubling up.
+    const result = startFullSyncJob();
+    if (!result.started) {
+      console.log(`[scheduler] full sync skipped — run ${result.runId} is already in progress`);
+      return;
+    }
+    console.log(`[scheduler] full sync starting (run ${result.runId})`);
     try {
-      console.log('[scheduler] full sync starting');
-      const { stats } = await runFullSync();
+      const stats = await result.completion;
       console.log('[scheduler] full sync done', stats);
     } catch (err) {
       console.error('[scheduler] full sync failed', err);

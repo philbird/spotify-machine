@@ -2,6 +2,7 @@ import express from 'express';
 import path from 'node:path';
 import { config } from '../config.js';
 import { applySchedule } from '../scheduler/index.js';
+import { recoverInterruptedRuns } from '../sync/fullSyncJob.js';
 import { authRouter } from './routes/auth.js';
 import { changelogRouter } from './routes/changelog.js';
 import { dashboardRouter } from './routes/dashboard.js';
@@ -37,6 +38,9 @@ export function createServer(): express.Express {
 }
 
 export function startServer(): void {
+  // Mark stale 'running' rows from a previous process as interrupted before
+  // the API or scheduler can accept new jobs.
+  recoverInterruptedRuns();
   const app = createServer();
   app.listen(config.port, () => {
     console.log(`[server] http://127.0.0.1:${config.port}`);

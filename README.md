@@ -63,6 +63,16 @@ npm run sync -- all         # both
 npm run sync -- full --force  # bypass snapshot_id short-circuit and re-fetch all playlist tracks
 ```
 
+## Full-sync job & status API
+
+Full syncs run asynchronously with persisted, versioned progress:
+
+- `POST /api/sync/full` claims a run atomically and responds **202** with `{ runId }` before any sync work starts; the sync runs in the background. If a full sync is already running (started from the API, the scheduler, or the CLI — they all share one guard), it responds **409** with `{ error, runId }` pointing at the active run.
+- `GET /api/sync/status` returns `{ run }` for the **latest full-sync run in any state** (`running`, `ok`, `error`, `interrupted`), with `runId`, `startedAt`, `finishedAt`, `currentPlaylist`, stable counters (`playlistsTotal`, `playlistsProcessed`, `playlistsFailed`, `tracksProcessed`, `changesRecorded`), and a sanitized `error` summary. **If no full sync has ever been recorded (fresh database), it returns `200` with `{ "run": null }`** — there is no run history to report and clients should treat it as "nothing to show".
+- `GET /api/sync/runs/:runId` returns the same shape for one specific run, so a client can keep following the run a POST returned even after a newer one starts.
+
+Progress is checkpointed to the database after every playlist, so the Dashboard shows live progress (and survives page reloads). If the process dies mid-sync, the stale `running` row is marked `interrupted` at next startup; a failure during the sync finalizes the run as `error`. An individual playlist that Spotify refuses (403/404) is counted in `playlistsFailed` and the run continues; unexpected errors abort the whole run.
+
 ## Spotify API restrictions
 
 Spotify locks down some endpoints for new third-party apps:
@@ -99,8 +109,8 @@ For implementation detail and design decisions, see [CONTEXT.md](CONTEXT.md).
 ## Status / limitations
 
 - Single-user, single-machine. **The DB stores your OAuth refresh token in plaintext** — treat the file like a credential. Don't expose this app to the internet without putting auth in front of it.
-- `POST /api/sync/full` blocks until done; very large libraries may hit reverse-proxy timeouts.
-- No tests yet.
+- Startup recovery preserves runs owned by a live local process and marks rows with a dead, missing, or legacy owner as `interrupted`.
+- Tests: `npm test` (vitest) covers the sync job runner, the sync HTTP API, per-playlist progress, and Dashboard polling.
 
 ## License
 

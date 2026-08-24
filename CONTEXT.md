@@ -95,7 +95,7 @@ All tables in [src/db/schema.ts](src/db/schema.ts). Summary:
 3. Insert into `play_events` with `ON CONFLICT DO NOTHING`.
 4. For each newly inserted event, increment `play_counts` (creating the row if needed).
 
-Both routes (`POST /api/sync/full`, `POST /api/sync/plays`) are guarded by an in-memory mutex to prevent concurrent runs.
+`POST /api/sync/full` responds 202 immediately and runs the sync in the background through `src/sync/fullSyncJob.ts` — a single exclusive in-process runner whose claim is an atomic SQLite transaction (the DB is the concurrency authority; the API, scheduler, and CLI all share it, and a busy start yields 409/skip with the active runId). Progress (versioned JSON: currentPlaylist + counters) is persisted to `sync_runs.progress` after every playlist and served by `GET /api/sync/status` (returns `{ run: null }` if no full sync was ever recorded) and `GET /api/sync/runs/:runId`. Stale `running` rows are marked `interrupted` at process startup. `POST /api/sync/plays` remains synchronous behind an in-memory mutex and also 409s while a full sync runs.
 
 ## Running it
 
@@ -132,9 +132,7 @@ Required scopes (already wired in [src/config.ts](src/config.ts)): `playlist-rea
 
 **Not yet:**
 - Never been run end-to-end on a real Spotify account. Code has not been executed yet — typecheck/install/sync untested. Expect minor fixes on first run.
-- No tests.
 - No `Browse playlists` page in the UI (the `/api/playlists` endpoints exist; just need a page).
-- No "sync progress" streaming — long full syncs block the HTTP request until done. For very large libraries (1000+ playlists) this could hit timeouts. Fix: move sync to a background job with status polling.
 - No graceful shutdown — `closeDb()` exists but isn't wired to SIGTERM/SIGINT in the server entry.
 - No CSRF on the OAuth state — `pendingStates` is an in-memory Set in [src/server/routes/auth.ts](src/server/routes/auth.ts), which is fine for a single-user local app but not for anything multi-tenant.
 

@@ -1,5 +1,5 @@
 import { closeDb } from './db/index.js';
-import { runFullSync } from './sync/full.js';
+import { recoverInterruptedRuns, startFullSyncJob } from './sync/fullSyncJob.js';
 import { runPlaysPoll } from './sync/plays.js';
 
 async function main(): Promise<void> {
@@ -12,9 +12,19 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
+  // Same startup recovery as the server: stale 'running' rows from a dead
+  // process are marked interrupted before this process starts a job.
+  recoverInterruptedRuns();
+
   if (arg === 'full' || arg === 'all') {
     console.log(`Running full sync${force ? ' (force)' : ''}...`);
-    const { stats } = await runFullSync({ force });
+    const result = startFullSyncJob({ force });
+    if (!result.started) {
+      console.error(`A full sync is already running (run ${result.runId}); not starting another.`);
+      process.exitCode = 1;
+      return;
+    }
+    const stats = await result.completion;
     console.log('Full sync done:', stats);
   }
   if (arg === 'plays' || arg === 'all') {

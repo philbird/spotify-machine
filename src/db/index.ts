@@ -14,8 +14,17 @@ export function db(): Database.Database {
   _db.pragma('journal_mode = WAL');
   _db.pragma('foreign_keys = ON');
   _db.exec(SCHEMA_SQL);
+  migrate(_db);
 
   return _db;
+}
+
+// CREATE TABLE IF NOT EXISTS never alters existing tables, so columns added to
+// the schema after a database was created must be backfilled here.
+function migrate(d: Database.Database): void {
+  const cols = (d.pragma('table_info(sync_runs)') as { name: string }[]).map((c) => c.name);
+  if (!cols.includes('progress')) d.exec('ALTER TABLE sync_runs ADD COLUMN progress TEXT');
+  if (!cols.includes('owner_token')) d.exec('ALTER TABLE sync_runs ADD COLUMN owner_token TEXT');
 }
 
 export function closeDb(): void {

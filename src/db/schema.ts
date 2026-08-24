@@ -6,7 +6,9 @@ CREATE TABLE IF NOT EXISTS sync_runs (
   finished_at TEXT,
   status TEXT NOT NULL DEFAULT 'running',
   error TEXT,
-  stats TEXT
+  stats TEXT,
+  progress TEXT,
+  owner_token TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_sync_runs_started ON sync_runs(started_at DESC);
